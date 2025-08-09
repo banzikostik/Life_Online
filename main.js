@@ -1,93 +1,128 @@
+// ==== Псевдо-3D без модулей: поворот Q/E, масштаб по расстоянию, depth по y ====
+
+const DIRS = [
+  "back",
+  "back right",
+  "right",
+  "front right",
+  "front",
+  "front left",
+  "left",
+  "back left",
+];
+
+// Позиции домов (просто пример — потом возьмём реальные из карты)
+const HOUSES = [
+  { x: 300, y: 260, id: 1 },
+  { x: 520, y: 320, id: 1 },
+  { x: 700, y: 380, id: 1 },
+];
+
+let viewIndex = 0;       // 0..7
+let keys;
+let player;
+let buildings = [];
+let hud;
+
 const config = {
-    type: Phaser.AUTO,
-    width: 1280,
-    height: 720,
-    parent: 'game-container',
-    physics: {
-        default: 'arcade',
-        arcade: { debug: false }
-    },
-    scene: {
-        preload: preload,
-        create: create,
-        update: update
-    }
+  type: Phaser.AUTO,
+  width: 960,
+  height: 540,
+  backgroundColor: "#151515",
+  physics: { default: "arcade" },
+  scene: { preload, create, update }
 };
 
-const game = new Phaser.Game(config);
-
-let player, cursors, camera, map, housesLayer, roadsLayer;
+new Phaser.Game(config);
 
 function preload() {
-    // Карта
-    this.load.tilemapTiledJSON('map', 'assets/daggerton2.json');
-    // Тайлсеты
-    this.load.image('Дома', 'assets/medium_1_png_1.png');
-    this.load.image('дороги', 'assets/roads_test.png');
-    // Спрайты героя
-    this.load.spritesheet('casual_hero_down', 'assets/casual_hero_down.png', { frameWidth: 64, frameHeight: 64 });
-    this.load.spritesheet('casual_hero_up', 'assets/casual_hero_up.png', { frameWidth: 64, frameHeight: 64 });
-    this.load.spritesheet('casual_hero_left', 'assets/casual_hero_left.png', { frameWidth: 64, frameHeight: 64 });
-    this.load.spritesheet('casual_hero_right', 'assets/casual_hero_right.png', { frameWidth: 64, frameHeight: 64 });
+  // грузим по одному варианту (№1) для всех 8 направлений
+  for (const dir of DIRS) {
+    const key = houseKey(dir, 1);
+    const path = `city/small mansion/${dir}/scalled houses/house_${dir.replace(/ /g, "_")}1.png`;
+    this.load.image(key, path);
+  }
 }
 
 function create() {
-    map = this.make.tilemap({ key: 'map' });
+  // простейший "игрок" — небольшой прямоугольник (центр сцены)
+  player = this.add.rectangle(config.width/2, config.height/2, 16, 16, 0x00ff00);
+  player.setDepth(player.y);
 
-    let housesTileset = map.addTilesetImage('Дома', 'Дома');
-    let roadsTileset = map.addTilesetImage('дороги', 'дороги');
+  // создаём дома с текущим направлением
+  const dir = DIRS[viewIndex];
+  for (const h of HOUSES) {
+    const spr = this.add.image(h.x, h.y, houseKey(dir, h.id));
+    spr.setOrigin(0.5, 1);            // «ноги» у земли
+    buildings.push(spr);
+  }
+  updateDepthAndScale(this);
 
-    // Дома увеличены в 2 раза
-    housesLayer = map.createLayer('Слой тайлов 1', housesTileset, 0, 0);
-    housesLayer.setScale(2);
+  // клавиши: Q/E — поворот, WASD — движение игрока
+  keys = this.input.keyboard.addKeys({
+    q: Phaser.Input.Keyboard.KeyCodes.Q,
+    e: Phaser.Input.Keyboard.KeyCodes.E,
+    w: Phaser.Input.Keyboard.KeyCodes.W,
+    a: Phaser.Input.Keyboard.KeyCodes.A,
+    s: Phaser.Input.Keyboard.KeyCodes.S,
+    d: Phaser.Input.Keyboard.KeyCodes.D,
+  });
 
-    // Дороги без масштаба
-    roadsLayer = map.createLayer('Слой тайлов 2', roadsTileset, 0, 0);
-
-    // Коллизии
-    housesLayer.setCollisionByExclusion([-1]);
-    this.physics.world.setBounds(0, 0, map.widthInPixels * 2, map.heightInPixels * 2);
-
-    // Игрок
-    player = this.physics.add.sprite(200, 200, 'casual_hero_down', 0);
-    player.setSize(40, 50).setOffset(12, 10);
-    this.physics.add.collider(player, housesLayer);
-
-    // Камера
-    camera = this.cameras.main;
-    camera.startFollow(player);
-    camera.setBounds(0, 0, map.widthInPixels * 2, map.heightInPixels * 2);
-
-    // Клавиши
-    cursors = this.input.keyboard.createCursorKeys();
-    this.input.keyboard.addKeys('W,A,S,D');
-
-    // Анимации
-    this.anims.create({ key: 'walk_down', frames: this.anims.generateFrameNumbers('casual_hero_down', { start: 0, end: 5 }), frameRate: 10, repeat: -1 });
-    this.anims.create({ key: 'walk_up', frames: this.anims.generateFrameNumbers('casual_hero_up', { start: 0, end: 5 }), frameRate: 10, repeat: -1 });
-    this.anims.create({ key: 'walk_left', frames: this.anims.generateFrameNumbers('casual_hero_left', { start: 0, end: 5 }), frameRate: 10, repeat: -1 });
-    this.anims.create({ key: 'walk_right', frames: this.anims.generateFrameNumbers('casual_hero_right', { start: 0, end: 5 }), frameRate: 10, repeat: -1 });
+  // HUD
+  hud = this.add.text(8, 8, hudText(), { fontFamily: "monospace", fontSize: "14px", color: "#ffffff" }).setScrollFactor(0);
 }
 
-function update() {
-    let speed = 200;
-    let vx = 0, vy = 0;
+function update(time, delta) {
+  // Поворот «камеры»
+  if (Phaser.Input.Keyboard.JustDown(keys.q)) {
+    viewIndex = (viewIndex + DIRS.length - 1) % DIRS.length;
+    swapHouseTextures(this);
+  }
+  if (Phaser.Input.Keyboard.JustDown(keys.e)) {
+    viewIndex = (viewIndex + 1) % DIRS.length;
+    swapHouseTextures(this);
+  }
 
-    if (cursors.left.isDown || this.input.keyboard.addKey('A').isDown) {
-        vx = -speed;
-        player.anims.play('walk_left', true);
-    } else if (cursors.right.isDown || this.input.keyboard.addKey('D').isDown) {
-        vx = speed;
-        player.anims.play('walk_right', true);
-    } else if (cursors.down.isDown || this.input.keyboard.addKey('S').isDown) {
-        vy = speed;
-        player.anims.play('walk_down', true);
-    } else if (cursors.up.isDown || this.input.keyboard.addKey('W').isDown) {
-        vy = -speed;
-        player.anims.play('walk_up', true);
-    } else {
-        player.anims.stop();
-    }
+  // Движение игрока (чтобы увидеть масштаб/глубину)
+  const speed = 180 * (delta / 1000);
+  if (keys.a.isDown) player.x -= speed;
+  if (keys.d.isDown) player.x += speed;
+  if (keys.w.isDown) player.y -= speed;
+  if (keys.s.isDown) player.y += speed;
+  player.setDepth(player.y);
 
-    player.setVelocity(vx, vy);
+  updateDepthAndScale(this);
+  if (hud) hud.setText(hudText());
+}
+
+// ==== helpers ====
+
+function houseKey(dir, id) {
+  return `house_${dir.replace(/ /g, "_")}_${id}`;
+}
+
+function swapHouseTextures(scene) {
+  const dir = DIRS[viewIndex];
+  for (const spr of buildings) {
+    const id = 1; // пока все дома типа 1
+    const key = houseKey(dir, id);
+    if (scene.textures.exists(key)) spr.setTexture(key);
+  }
+}
+
+function updateDepthAndScale(scene) {
+  const px = player.x, py = player.y;
+  for (const spr of buildings) {
+    const dx = spr.x - px, dy = spr.y - py;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    // ближе — больше (простая формула, можно настроить)
+    const scale = Phaser.Math.Clamp(1.25 - dist / 650, 0.6, 1.25);
+    spr.setScale(scale);
+    // кто ниже по y — тот «сверху»
+    spr.setDepth(spr.y);
+  }
+}
+
+function hudText() {
+  return `Q/E — поворот · WASD — движение\nview: ${DIRS[viewIndex]}`;
 }
